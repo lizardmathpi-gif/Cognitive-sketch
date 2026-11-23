@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sketch Pad</title>
+<style>
+  :root {
+    --bg: #000000;
+    --white: #f7f7f2;
+    --red: #ff4d5e;
+    --blue: #4da6ff;
+    --panel: rgba(28, 28, 32, 0.78);
+    --panel-edge: rgba(255, 255, 255, 0.12);
+    --text: #e9e9ee;
+    --muted: #8b8b97;
+    --pen: var(--white);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden; -webkit-user-select: none; user-select: none;
+    overscroll-behavior: none;
+  }
+  canvas#pad {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+    touch-action: none; cursor: none; display: block;
+  }
+  /* faint dot grid so the empty board still feels like a surface */
+  .grid {
+    position: fixed; inset: 0; pointer-events: none;
+    background-image: radial-gradient(rgba(255,255,255,0.07) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+  .hint {
+    position: fixed; top: calc(24px + env(safe-area-inset-top, 0px)); left: 50%;
+    transform: translateX(-50%); color: var(--muted); font-size: 15px;
+    letter-spacing: 0.01em; pointer-events: none; transition: opacity .6s ease;
+    text-align: center; padding: 0 16px;
+  }
+  .hint.gone { opacity: 0; }
+
+  .cursor {
+    position: fixed; left: 0; top: 0; pointer-events: none; border-radius: 50%;
+    border: 1.5px solid var(--pen); transform: translate(-50%, -50%);
+    opacity: 0; transition: opacity .15s ease, border-color .15s ease;
+    mix-blend-mode: normal; z-index: 5;
+  }
+  .cursor.eraser { border-style: dashed; border-color: rgba(255,255,255,0.7); }
+  .cursor.on { opacity: 0.9; }
+
+  .bar {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    background: var(--panel); border: 1px solid var(--panel-edge);
+    border-radius: 22px; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    box-shadow: 0 18px 50px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
+    max-width: calc(100vw - 20px); overflow-x: auto; z-index: 10;
+  }
+  .sep { width: 1px; height: 30px; background: var(--panel-edge); margin: 0 6px; flex: none; }
+  button.tool {
+    all: unset; cursor: pointer; display: flex; flex-direction: column; align-items: center;
+    gap: 5px; padding: 8px 12px 7px; border-radius: 15px; flex: none;
+    color: var(--text); font-size: 13px; transition: background .15s ease, transform .1s ease;
+  }
+  button.tool:hover { background: rgba(255,255,255,0.07); }
+  button.tool:active { transform: scale(0.95); }
+  button.tool:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  button.tool[aria-pressed="true"] { background: rgba(255,255,255,0.12); }
+  button.tool[disabled] { opacity: 0.35; cursor: default; }
+  .swatch {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--c);
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.0), 0 0 14px var(--c);
+    transition: box-shadow .15s ease;
+  }
+  button.tool[aria-pressed="true"] .swatch { box-shadow: 0 0 0 2px #000, 0 0 0 4px var(--c), 0 0 18px var(--c); }
+  .icon { width: 26px; height: 26px; display: grid; place-items: center; }
+  .icon svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .label { display: flex; align-items: center; gap: 6px; }
+  kbd {
+    font: 600 11px/1 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted);
+    border: 1px solid var(--panel-edge); border-radius: 5px; padding: 2px 5px; background: rgba(255,255,255,0.04);
+  }
+  .size { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 10px 7px; flex: none; font-size: 13px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 96px; height: 4px; border-radius: 4px; background: rgba(255,255,255,0.22); outline: none; margin: 11px 0; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 0; }
+  input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 0; }
+  input[type=range]:focus-visible { outline: 2px solid var(--blue); outline-offset: 6px; }
+  @media (max-width: 640px) { .size { display: none; } .hint { font-size: 14px; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <canvas id="pad"></canvas>
+  <div class="cursor" id="cursor"></div>
+  <div class="hint" id="hint">Draw anywhere. Press w, r or b to change color.</div>
+
+  <div class="bar" role="toolbar" aria-label="Drawing tools">
+    <button class="tool" data-color="white" aria-pressed="true" title="White pen (w)" style="--c: var(--white)">
+      <span class="swatch" style="--c: var(--white)"></span><span class="label">White <kbd>w</kbd></span>
+    </button>
+    <button class="tool" data-color="red" aria-pressed="false" title="Red pen (r)">
+      <span class="swatch" style="--c: var(--red)"></span><span class="label">Red <kbd>r</kbd></span>
+    </button>
+    <button class="tool" data-color="blue" aria-pressed="false" title="Blue pen (b)">
+      <span class="swatch" style="--c: var(--blue)"></span><span class="label">Blue <kbd>b</kbd></span>
+    </button>
+    <span class="sep"></span>
+    <button class="tool" id="eraser" aria-pressed="false" title="Eraser (e)">
+      <span class="icon"><svg viewBox="0 0 24 24"><path d="M8.5 20 3.6 15.1a1.8 1.8 0 0 1 0-2.5l8.9-8.9a1.8 1.8 0 0 1 2.5 0l5.4 5.4a1.8 1.8 0 0 1 0 2.5L12.5 20"/><path d="M8.5 20h12M7 9.5l7.5 7.5"/></svg></span>
+      <span class="label">Eraser <kbd>e</kbd></span>
+    </button>
+    <div class="size">
+      <input type="range" id="size" min="2" max="40" value="5" aria-label="Pen size">
+      <span class="label">Size <kbd>[</kbd><kbd>]</kbd></span>
+    </div>
+    <span class="sep"></span>
+    <button class="tool" id="undo" title="Undo (u)" disabled>
+      <span class="icon"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg></span>
+      <span class="label">Undo <kbd>u</kbd></span>
+    </button>
+    <button class="tool" id="clear" title="Delete everything (d)" disabled>
+      <span class="icon"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg></span>
+      <span class="label">Delete all <kbd>d</kbd></span>
+    </button>
+  </div>
+
+<script>
+(function () {
+  const COLORS = { white: '#f7f7f2', red: '#ff4d5e', blue: '#4da6ff' };
+  const canvas = document.getElementById('pad');
+  const ctx = canvas.getContext('2d');
+  const cursor = document.getElementById('cursor');
+  const hint = document.getElementById('hint');
+  const sizeInput = document.getElementById('size');
+  const undoBtn = document.getElementById('undo');
+  const clearBtn = document.getElementById('clear');
+  const eraserBtn = document.getElementById('eraser');
+  const colorBtns = document.querySelectorAll('[data-color]');
+
+  let colorName = 'white';
+  let erasing = false;
+  let size = 5;
+  let strokes = [];      // finished actions: strokes or {clear:true}
+  let current = null;    // stroke in progress
+  let dpr = 1;
+
+  /* ---------- canvas sizing ---------- */
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    redraw();
+  }
+
+  /* ---------- drawing ---------- */
+  function setupStroke(s) {
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = s.size * dpr;
+    if (s.eraser) {
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.strokeStyle = ctx.fillStyle = '#000';
+      ctx.shadowBlur = 0;
+    } else {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = ctx.fillStyle = s.color;
+      ctx.shadowColor = s.color;
+      ctx.shadowBlur = Math.max(4, s.size * 1.6) * dpr; // soft glow, like chalk light
+    }
+  }
+
+  function drawStroke(s) {
+    const p = s.points;
+    if (!p.length) return;
+    ctx.save();
+    setupStroke(s);
+    if (p.length < 3) {
+      // single tap or very short mark: draw a dot
+      ctx.beginPath();
+      ctx.arc(p[0].x * dpr, p[0].y * dpr, (s.size * dpr) / 2, 0, Math.PI * 2);
+      ctx.fill();
+      if (p.length === 2) {
+        ctx.beginPath();
+        ctx.moveTo(p[0].x * dpr, p[0].y * dpr);
+        ctx.lineTo(p[1].x * dpr, p[1].y * dpr);
+        ctx.stroke();
+      }
+    } else {
+      // smooth curve through midpoints of consecutive points
+      ctx.beginPath();
+      ctx.moveTo(p[0].x * dpr, p[0].y * dpr);
+      for (let i = 1; i < p.length - 1; i++) {
+        const mx = (p[i].x + p[i + 1].x) / 2;
+        const my = (p[i].y + p[i + 1].y) / 2;
+        ctx.quadraticCurveTo(p[i].x * dpr, p[i].y * dpr, mx * dpr, my * dpr);
+      }
+      const last = p[p.length - 1];
+      ctx.lineTo(last.x * dpr, last.y * dpr);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function redraw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // everything after the most recent clear action
+    let start = 0;
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      if (strokes[i].clear) { start = i + 1; break; }
+    }
+    for (let i = start; i < strokes.length; i++) drawStroke(strokes[i]);
+    if (current) drawStroke(current);
+    updateButtons();
+  }
+
+  function hasInk() {
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      if (strokes[i].clear) return false;
+      return true;
+    }
+    return false;
+  }
+
+  function updateButtons() {
+    undoBtn.disabled = strokes.length === 0 && !current;
+    clearBtn.disabled = !hasInk() && !current;
+  }
+
+  /* ---------- pointer input ---------- */
+  function pos(e) { return { x: e.clientX, y: e.clientY }; }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button > 0) return;
+    canvas.setPointerCapture(e.pointerId);
+    hint.classList.add('gone');
+    current = {
+      color: COLORS[colorName],
+      size: erasing ? size * 3 : size,
+      eraser: erasing,
+      points: [pos(e)]
+    };
+    redraw();
+  });
+
+  canvas.addEventListener('pointermove', (e) => {
+    moveCursor(e);
+    if (!current) return;
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    for (const ev of (events.length ? events : [e])) {
+      const p = pos(ev);
+      const last = current.points[current.points.length - 1];
+      if (Math.hypot(p.x - last.x, p.y - last.y) >= 1.2) current.points.push(p);
+    }
+    redraw();
+  });
+
+  function endStroke(e) {
+    if (!current) return;
+    strokes.push(current);
+    current = null;
+    redraw();
+  }
+  canvas.addEventListener('pointerup', endStroke);
+  canvas.addEventListener('pointercancel', endStroke);
+
+  /* ---------- cursor ring ---------- */
+  function moveCursor(e) {
+    if (e.pointerType === 'touch') { cursor.classList.remove('on'); return; }
+    cursor.style.left = e.clientX + 'px';
+    cursor.style.top = e.clientY + 'px';
+    cursor.classList.add('on');
+  }
+  function sizeCursor() {
+    const d = Math.max(erasing ? size * 3 : size, 6);
+    cursor.style.width = cursor.style.height = d + 'px';
+    cursor.classList.toggle('eraser', erasing);
+  }
+  canvas.addEventListener('pointerleave', () => cursor.classList.remove('on'));
+  canvas.addEventListener('pointerenter', (e) => moveCursor(e));
+
+  /* ---------- tools ---------- */
+  function setColor(name) {
+    colorName = name;
+    erasing = false;
+    document.documentElement.style.setProperty('--pen', COLORS[name]);
+    colorBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.color === name)));
+    eraserBtn.setAttribute('aria-pressed', 'false');
+    sizeCursor();
+  }
+  function setEraser() {
+    erasing = true;
+    colorBtns.forEach(b => b.setAttribute('aria-pressed', 'false'));
+    eraserBtn.setAttribute('aria-pressed', 'true');
+    sizeCursor();
+  }
+  function undo() {
+    if (current) { current = null; redraw(); return; }
+    if (!strokes.length) return;
+    strokes.pop();
+    redraw();
+  }
+  function clearAll() {
+    if (!hasInk()) return;
+    strokes.push({ clear: true }); // recorded so undo can bring the drawing back
+    redraw();
+  }
+  function changeSize(delta) {
+    size = Math.min(40, Math.max(2, size + delta));
+    sizeInput.value = size;
+    sizeCursor();
+  }
+
+  colorBtns.forEach(b => b.addEventListener('click', () => setColor(b.dataset.color)));
+  eraserBtn.addEventListener('click', setEraser);
+  undoBtn.addEventListener('click', undo);
+  clearBtn.addEventListener('click', clearAll);
+  sizeInput.addEventListener('input', () => { size = Number(sizeInput.value); sizeCursor(); });
+
+  /* ---------- keyboard ---------- */
+  window.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;       // leave browser shortcuts alone
+    if (e.target && e.target.tagName === 'INPUT' && e.key.length > 1) return;
+    switch (e.key.toLowerCase()) {
+      case 'w': setColor('white'); break;
+      case 'r': setColor('red'); break;
+      case 'b': setColor('blue'); break;
+      case 'e': setEraser(); break;
+      case 'u': undo(); break;
+      case 'd': clearAll(); break;
+      case '[': changeSize(-2); break;
+      case ']': changeSize(2); break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+
+  window.addEventListener('resize', resize);
+  document.addEventListener('contextmenu', (e) => e.preventDefault());
+  setColor('white');
+  resize();
+})();
+</script>
+</body>
+</html>
